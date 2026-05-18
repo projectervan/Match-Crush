@@ -37,6 +37,10 @@ public class GameManager : MonoBehaviour
     [Tooltip("Jika > 0, override level dari Firestore untuk testing.")]
     [SerializeField] private int debugLevel = 0;
 
+    [Header("Coins Reward")]
+    [Tooltip("Koin per sisa move saat menang.")]
+    [SerializeField] private int coinsPerMoveLeft = 10;
+
     // State
     public GameState CurrentState { get; private set; } = GameState.Playing;
     public int CurrentLevel { get; private set; }
@@ -44,10 +48,12 @@ public class GameManager : MonoBehaviour
     public int MoveLimit { get; private set; }
     public int MovesRemaining { get; private set; }
     public int CurrentScore { get; private set; }
+    public int Coins { get; private set; }
 
     // Events untuk UI binding
     public event Action<int> OnScoreChanged;          // skor baru
     public event Action<int> OnMovesChanged;          // moves remaining
+    public event Action<int> OnCoinsChanged;          // koin berubah
     public event Action<GameState> OnStateChanged;    // state berubah
     public event Action OnVictory;
     public event Action OnGameOver;
@@ -83,12 +89,23 @@ public class GameManager : MonoBehaviour
         CurrentScore = 0;
         CurrentState = GameState.Playing;
 
+        // Load coins dari Firestore
+        if (DatabaseManager.Instance != null && DatabaseManager.Instance.CachedUserData != null)
+        {
+            Coins = DatabaseManager.Instance.CachedUserData.Coins;
+        }
+        else
+        {
+            Coins = 100; // Default untuk testing
+        }
+
         // Notify UI
         OnScoreChanged?.Invoke(CurrentScore);
         OnMovesChanged?.Invoke(MovesRemaining);
+        OnCoinsChanged?.Invoke(Coins);
         OnStateChanged?.Invoke(CurrentState);
 
-        Debug.Log($"GameManager: Level {CurrentLevel} | Target: {TargetScore} | Moves: {MoveLimit}");
+        Debug.Log($"GameManager: Level {CurrentLevel} | Target: {TargetScore} | Moves: {MoveLimit} | Coins: {Coins}");
     }
 
     /// <summary>
@@ -172,13 +189,22 @@ public class GameManager : MonoBehaviour
         OnStateChanged?.Invoke(CurrentState);
         OnVictory?.Invoke();
 
-        Debug.Log($"GameManager: VICTORY! Level {CurrentLevel} cleared.");
+        // Hitung Moves Left Bonus: 10 koin x sisa moves
+        int movesLeftBonus = MovesRemaining * coinsPerMoveLeft;
+        if (movesLeftBonus > 0)
+        {
+            AddCoins(movesLeftBonus);
+            Debug.Log($"GameManager: Moves Left Bonus — +{movesLeftBonus} coins ({MovesRemaining} moves x {coinsPerMoveLeft})");
+        }
 
-        // Update level di Firestore
+        Debug.Log($"GameManager: VICTORY! Level {CurrentLevel} cleared. Total Coins: {Coins}");
+
+        // Update level dan koin di Firestore
         if (DatabaseManager.Instance != null)
         {
             DatabaseManager.Instance.IncrementLevel();
             DatabaseManager.Instance.SaveHighScore(CurrentScore);
+            DatabaseManager.Instance.SaveCoins(Coins);
         }
     }
 
@@ -251,6 +277,44 @@ public class GameManager : MonoBehaviour
     {
         Time.timeScale = 1f;
         SceneManager.LoadScene("MainMenuScene");
+    }
+
+    #endregion
+
+    #region Coins
+
+    /// <summary>
+    /// Menambah koin dan notify UI.
+    /// </summary>
+    /// <param name="amount">Jumlah koin yang ditambahkan.</param>
+    public void AddCoins(int amount)
+    {
+        if (amount <= 0) return;
+
+        Coins += amount;
+        OnCoinsChanged?.Invoke(Coins);
+        Debug.Log($"GameManager: +{amount} coins. Total: {Coins}");
+    }
+
+    /// <summary>
+    /// Mengurangi koin. Mengembalikan true jika berhasil (cukup saldo).
+    /// </summary>
+    /// <param name="amount">Jumlah koin yang dikurangi.</param>
+    public bool SpendCoins(int amount)
+    {
+        if (amount <= 0 || Coins < amount) return false;
+
+        Coins -= amount;
+        OnCoinsChanged?.Invoke(Coins);
+
+        // Simpan ke Firestore
+        if (DatabaseManager.Instance != null)
+        {
+            DatabaseManager.Instance.SaveCoins(Coins);
+        }
+
+        Debug.Log($"GameManager: -{amount} coins. Total: {Coins}");
+        return true;
     }
 
     #endregion
