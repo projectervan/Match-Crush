@@ -10,11 +10,12 @@ public enum GameState
     Playing,
     Won,
     Lost,
-    Paused
+    Paused,
+    OutOfMoves  // Menunggu keputusan pemain: beli moves atau game over
 }
 
 /// <summary>
-/// Singleton yang mengatur game state, move limit, skor, dan logika procedural level.
+/// Singleton yang mengatur game state, move limit, skor, koin, dan logika procedural level.
 /// Tempatkan pada GameObject persistent di GameplayScene.
 /// </summary>
 public class GameManager : MonoBehaviour
@@ -37,6 +38,10 @@ public class GameManager : MonoBehaviour
     [Tooltip("Jika > 0, override level dari Firestore untuk testing.")]
     [SerializeField] private int debugLevel = 0;
 
+    [Header("Extra Moves Settings")]
+    [SerializeField] private int extraMovesCost = 50;
+    [SerializeField] private int extraMovesAmount = 5;
+
     // State
     public GameState CurrentState { get; private set; } = GameState.Playing;
     public int CurrentLevel { get; private set; }
@@ -44,13 +49,20 @@ public class GameManager : MonoBehaviour
     public int MoveLimit { get; private set; }
     public int MovesRemaining { get; private set; }
     public int CurrentScore { get; private set; }
+    public int Coins { get; private set; }
+
+    // Extra moves config (public read)
+    public int ExtraMovesCost => extraMovesCost;
+    public int ExtraMovesAmount => extraMovesAmount;
 
     // Events untuk UI binding
-    public event Action<int> OnScoreChanged;          // skor baru
-    public event Action<int> OnMovesChanged;          // moves remaining
-    public event Action<GameState> OnStateChanged;    // state berubah
+    public event Action<int> OnScoreChanged;
+    public event Action<int> OnMovesChanged;
+    public event Action<int> OnCoinsChanged;
+    public event Action<GameState> OnStateChanged;
     public event Action OnVictory;
     public event Action OnGameOver;
+    public event Action OnOutOfMoves;  // Tampilkan panel "Beli 5 Moves"
 
     private void Start()
     {
@@ -76,6 +88,9 @@ public class GameManager : MonoBehaviour
             CurrentLevel = 1;
         }
 
+        // Load coins (TODO: bisa dari Firestore juga, sementara default 100)
+        Coins = 100;
+
         // Hitung target dan move limit berdasarkan PRD formula
         TargetScore = CurrentLevel * 1000;
         MoveLimit = Mathf.Max(10, 30 - (CurrentLevel / 5));
@@ -86,9 +101,10 @@ public class GameManager : MonoBehaviour
         // Notify UI
         OnScoreChanged?.Invoke(CurrentScore);
         OnMovesChanged?.Invoke(MovesRemaining);
+        OnCoinsChanged?.Invoke(Coins);
         OnStateChanged?.Invoke(CurrentState);
 
-        Debug.Log($"GameManager: Level {CurrentLevel} | Target: {TargetScore} | Moves: {MoveLimit}");
+        Debug.Log($"GameManager: Level {CurrentLevel} | Target: {TargetScore} | Moves: {MoveLimit} | Coins: {Coins}");
     }
 
     /// <summary>
@@ -150,6 +166,7 @@ public class GameManager : MonoBehaviour
     /// <summary>
     /// Dipanggil setelah seluruh proses match selesai (gravity + refill).
     /// Cek apakah move sudah habis dan belum menang.
+    /// Jika habis, tampilkan Out of Moves panel dulu (bukan langsung game over).
     /// </summary>
     public void CheckGameOverCondition()
     {
@@ -157,8 +174,64 @@ public class GameManager : MonoBehaviour
 
         if (MovesRemaining <= 0 && CurrentScore < TargetScore)
         {
-            TriggerGameOver();
+            TriggerOutOfMoves();
         }
+    }
+
+    /// <summary>
+    /// Trigger state Out of Moves — tampilkan panel penawaran beli moves.
+    /// </summary>
+    private void TriggerOutOfMoves()
+    {
+        if (CurrentState != GameState.Playing) return;
+
+        CurrentState = GameState.OutOfMoves;
+        OnStateChanged?.Invoke(CurrentState);
+        OnOutOfMoves?.Invoke();
+
+        Debug.Log($"GameManager: OUT OF MOVES. Coins: {Coins}, Cost: {extraMovesCost}");
+    }
+
+    /// <summary>
+    /// Pemain memilih membeli extra moves.
+    /// Cek apakah koin cukup. Jika ya, kurangi koin dan tambah moves.
+    /// </summary>
+    /// <returns>True jika berhasil membeli, false jika koin tidak cukup.</returns>
+    public bool BuyExtraMoves()
+    {
+        if (CurrentState != GameState.OutOfMoves) return false;
+
+        if (Coins < extraMovesCost)
+        {
+            Debug.Log("GameManager: Koin tidak cukup untuk membeli extra moves.");
+            return false;
+        }
+
+        // Kurangi koin
+        Coins -= extraMovesCost;
+        OnCoinsChanged?.Invoke(Coins);
+
+        // Tambah moves
+        MovesRemaining += extraMovesAmount;
+        OnMovesChanged?.Invoke(MovesRemaining);
+
+        // Kembali ke state Playing
+        CurrentState = GameState.Playing;
+        OnStateChanged?.Invoke(CurrentState);
+
+        Debug.Log($"GameManager: Extra moves purchased! +{extraMovesAmount} moves. Coins: {Coins}. Moves: {MovesRemaining}");
+        return true;
+    }
+
+    /// <summary>
+    /// Pemain menolak membeli extra moves — trigger Game Over.
+    /// </summary>
+    public void DeclineExtraMoves()
+    {
+        if (CurrentState != GameState.OutOfMoves) return;
+
+        Debug.Log("GameManager: Player declined extra moves. Triggering Game Over.");
+        TriggerGameOver();
     }
 
     /// <summary>
@@ -187,8 +260,6 @@ public class GameManager : MonoBehaviour
     /// </summary>
     private void TriggerGameOver()
     {
-        if (CurrentState != GameState.Playing) return;
-
         CurrentState = GameState.Lost;
         OnStateChanged?.Invoke(CurrentState);
         OnGameOver?.Invoke();
@@ -200,7 +271,37 @@ public class GameManager : MonoBehaviour
         {
             DatabaseManager.Instance.SaveHighScore(CurrentScore);
         }
+
+        // Kurangi nyawa
+        if (LifeManager.Instance != null)
+        {
+            LifeManager.Instance.LoseLife();
+        }
     }
+
+    #region Coins
+
+    /// <summary>
+    /// Menambah koin (reward selesai level, daily, dll).
+    /// </summary>
+    public void AddCoins(int amount)
+    {
+        if (amount <= 0) return;
+
+        Coins += amount;
+        OnCoinsChanged?.Invoke(Coins);
+        Debug.Log($"GameManager: +{amount} coins. Total: {Coins}");
+    }
+
+    /// <summary>
+    /// Apakah pemain punya cukup koin untuk beli extra moves.
+    /// </summary>
+    public bool CanAffordExtraMoves()
+    {
+        return Coins >= extraMovesCost;
+    }
+
+    #endregion
 
     #region Public Actions (Button Callbacks)
 
@@ -209,6 +310,7 @@ public class GameManager : MonoBehaviour
     /// </summary>
     public void RetryLevel()
     {
+        Time.timeScale = 1f;
         SceneManager.LoadScene(SceneManager.GetActiveScene().name);
     }
 
@@ -217,6 +319,7 @@ public class GameManager : MonoBehaviour
     /// </summary>
     public void NextLevel()
     {
+        Time.timeScale = 1f;
         SceneManager.LoadScene(SceneManager.GetActiveScene().name);
     }
 

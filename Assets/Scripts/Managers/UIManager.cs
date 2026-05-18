@@ -27,6 +27,7 @@ public class UIManager : MonoBehaviour
     [SerializeField] private TextMeshProUGUI levelText;
     [SerializeField] private TextMeshProUGUI scoreText;
     [SerializeField] private TextMeshProUGUI movesText;
+    [SerializeField] private TextMeshProUGUI coinsText;
 
     [Header("Victory Panel")]
     [SerializeField] private GameObject victoryPanel;
@@ -39,6 +40,14 @@ public class UIManager : MonoBehaviour
     [SerializeField] private TextMeshProUGUI gameOverTitleText;
     [SerializeField] private TextMeshProUGUI gameOverScoreText;
     [SerializeField] private Button retryButton;
+
+    [Header("Out of Moves Panel")]
+    [SerializeField] private GameObject outOfMovesPanel;
+    [SerializeField] private TextMeshProUGUI outOfMovesMessageText;
+    [SerializeField] private TextMeshProUGUI outOfMovesCostText;
+    [SerializeField] private Button buyMovesButton;
+    [SerializeField] private TextMeshProUGUI buyMovesButtonText;
+    [SerializeField] private Button declineMovesButton;
 
     [Header("Pause Panel")]
     [SerializeField] private GameObject pausePanel;
@@ -74,8 +83,10 @@ public class UIManager : MonoBehaviour
         {
             GameManager.Instance.OnScoreChanged += HandleScoreChanged;
             GameManager.Instance.OnMovesChanged += HandleMovesChanged;
+            GameManager.Instance.OnCoinsChanged += HandleCoinsChanged;
             GameManager.Instance.OnVictory += HandleVictory;
             GameManager.Instance.OnGameOver += HandleGameOver;
+            GameManager.Instance.OnOutOfMoves += HandleOutOfMoves;
             GameManager.Instance.OnStateChanged += HandleStateChanged;
         }
 
@@ -91,8 +102,10 @@ public class UIManager : MonoBehaviour
         {
             GameManager.Instance.OnScoreChanged -= HandleScoreChanged;
             GameManager.Instance.OnMovesChanged -= HandleMovesChanged;
+            GameManager.Instance.OnCoinsChanged -= HandleCoinsChanged;
             GameManager.Instance.OnVictory -= HandleVictory;
             GameManager.Instance.OnGameOver -= HandleGameOver;
+            GameManager.Instance.OnOutOfMoves -= HandleOutOfMoves;
             GameManager.Instance.OnStateChanged -= HandleStateChanged;
         }
 
@@ -113,6 +126,12 @@ public class UIManager : MonoBehaviour
 
         if (retryButton != null)
             retryButton.onClick.AddListener(OnRetryClicked);
+
+        if (buyMovesButton != null)
+            buyMovesButton.onClick.AddListener(OnBuyMovesClicked);
+
+        if (declineMovesButton != null)
+            declineMovesButton.onClick.AddListener(OnDeclineMovesClicked);
 
         if (pauseButton != null)
             pauseButton.onClick.AddListener(OnPauseClicked);
@@ -138,6 +157,7 @@ public class UIManager : MonoBehaviour
         UpdateLevelText();
         UpdateScoreText(GameManager.Instance.CurrentScore);
         UpdateMovesText(GameManager.Instance.MovesRemaining);
+        UpdateCoinsText(GameManager.Instance.Coins);
     }
 
     private void UpdateLevelText()
@@ -172,6 +192,14 @@ public class UIManager : MonoBehaviour
         }
     }
 
+    private void UpdateCoinsText(int coins)
+    {
+        if (coinsText != null)
+        {
+            coinsText.text = $"{coins}";
+        }
+    }
+
     #endregion
 
     #region Event Handlers
@@ -186,6 +214,11 @@ public class UIManager : MonoBehaviour
         UpdateMovesText(movesRemaining);
     }
 
+    private void HandleCoinsChanged(int coins)
+    {
+        UpdateCoinsText(coins);
+    }
+
     private void HandleVictory()
     {
         ShowVictoryPanel();
@@ -193,12 +226,17 @@ public class UIManager : MonoBehaviour
 
     private void HandleGameOver()
     {
+        HideOutOfMovesPanel();
         ShowGameOverPanel();
+    }
+
+    private void HandleOutOfMoves()
+    {
+        ShowOutOfMovesPanel();
     }
 
     private void HandleStateChanged(GameState newState)
     {
-        // Bisa digunakan untuk update visual tambahan berdasarkan state
         Debug.Log($"UIManager: Game state changed to {newState}");
     }
 
@@ -222,6 +260,7 @@ public class UIManager : MonoBehaviour
     {
         if (victoryPanel != null) victoryPanel.SetActive(false);
         if (gameOverPanel != null) gameOverPanel.SetActive(false);
+        if (outOfMovesPanel != null) outOfMovesPanel.SetActive(false);
         if (pausePanel != null) pausePanel.SetActive(false);
     }
 
@@ -262,6 +301,53 @@ public class UIManager : MonoBehaviour
     }
 
     /// <summary>
+    /// Menampilkan Out of Moves Panel.
+    /// Jika koin tidak cukup, disable tombol beli.
+    /// </summary>
+    private void ShowOutOfMovesPanel()
+    {
+        if (outOfMovesPanel == null) return;
+
+        outOfMovesPanel.SetActive(true);
+
+        if (outOfMovesMessageText != null)
+            outOfMovesMessageText.text = "Out of Moves!";
+
+        if (GameManager.Instance != null)
+        {
+            int cost = GameManager.Instance.ExtraMovesCost;
+            int moves = GameManager.Instance.ExtraMovesAmount;
+            bool canAfford = GameManager.Instance.CanAffordExtraMoves();
+
+            if (outOfMovesCostText != null)
+                outOfMovesCostText.text = $"Buy +{moves} Moves for {cost} Coins?";
+
+            if (buyMovesButton != null)
+            {
+                buyMovesButton.interactable = canAfford;
+
+                if (buyMovesButtonText != null)
+                {
+                    buyMovesButtonText.text = canAfford
+                        ? $"Buy ({cost} Coins)"
+                        : "Not Enough Coins";
+                }
+            }
+        }
+
+        Debug.Log("UIManager: Out of Moves panel shown.");
+    }
+
+    /// <summary>
+    /// Menyembunyikan Out of Moves Panel.
+    /// </summary>
+    private void HideOutOfMovesPanel()
+    {
+        if (outOfMovesPanel != null)
+            outOfMovesPanel.SetActive(false);
+    }
+
+    /// <summary>
     /// Menampilkan Pause Panel.
     /// </summary>
     private void ShowPausePanel()
@@ -293,6 +379,39 @@ public class UIManager : MonoBehaviour
     {
         if (GameManager.Instance != null)
             GameManager.Instance.RetryLevel();
+    }
+
+    /// <summary>
+    /// Pemain menekan tombol "Beli +5 Moves".
+    /// </summary>
+    private void OnBuyMovesClicked()
+    {
+        if (GameManager.Instance == null) return;
+
+        bool success = GameManager.Instance.BuyExtraMoves();
+
+        if (success)
+        {
+            // Berhasil beli — sembunyikan panel, game lanjut
+            HideOutOfMovesPanel();
+            Debug.Log("UIManager: Extra moves purchased, game continues.");
+        }
+        else
+        {
+            // Gagal (seharusnya tidak terjadi karena tombol di-disable)
+            Debug.LogWarning("UIManager: Failed to buy extra moves.");
+        }
+    }
+
+    /// <summary>
+    /// Pemain menolak membeli moves — trigger Game Over.
+    /// </summary>
+    private void OnDeclineMovesClicked()
+    {
+        if (GameManager.Instance != null)
+        {
+            GameManager.Instance.DeclineExtraMoves();
+        }
     }
 
     private void OnPauseClicked()
