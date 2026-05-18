@@ -28,6 +28,12 @@ public class UserData
 
     [FirestoreProperty]
     public int Coins { get; set; } = 100;
+
+    [FirestoreProperty]
+    public Timestamp LastLoginDate { get; set; }
+
+    [FirestoreProperty]
+    public int LoginStreak { get; set; } = 0;
 }
 
 /// <summary>
@@ -105,7 +111,9 @@ public class DatabaseManager : MonoBehaviour
                     HighScore = 0,
                     Lives = 5,
                     LastLifeLost = Timestamp.FromDateTime(DateTime.UtcNow),
-                    Coins = 100
+                    Coins = 100,
+                    LastLoginDate = Timestamp.FromDateTime(DateTime.UtcNow),
+                    LoginStreak = 1
                 };
 
                 await docRef.SetAsync(newUser);
