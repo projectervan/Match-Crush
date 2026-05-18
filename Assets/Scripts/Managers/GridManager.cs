@@ -4,8 +4,26 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
+/// Data hasil deteksi match — menyimpan posisi dan panjang match per grup.
+/// </summary>
+public struct MatchGroup
+{
+    public List<Vector2Int> Positions;
+    public int Length;
+    public bool IsHorizontal;
+
+    public MatchGroup(List<Vector2Int> positions, bool isHorizontal)
+    {
+        Positions = positions;
+        Length = positions.Count;
+        IsHorizontal = isHorizontal;
+    }
+}
+
+/// <summary>
 /// Singleton yang menangani pembuatan, pengelolaan, dan logika grid 8x8.
-/// Mendeteksi match-3+, menghancurkan objek, menerapkan gravity, dan spawn piece baru.
+/// Mendeteksi match-3+, special piece (LinePiece), menghancurkan objek,
+/// menerapkan gravity, dan spawn piece baru.
 /// Tempatkan pada GameObject persistent di GameplayScene.
 /// </summary>
 public class GridManager : MonoBehaviour
@@ -43,10 +61,12 @@ public class GridManager : MonoBehaviour
     [SerializeField] private float gravityStepDelay = 0.05f;
     [SerializeField] private float refillSpawnDelay = 0.03f;
     [SerializeField] private float postRefillDelay = 0.15f;
+    [SerializeField] private float lineBlastDelay = 0.1f;
 
     [Header("Scoring")]
     [SerializeField] private int baseScorePerPiece = 10;
     [SerializeField] private int comboMultiplierStep = 5;
+    [SerializeField] private int lineBlastBonusScore = 50;
 
     /// <summary>
     /// Array 2D yang menyimpan referensi setiap piece di grid.
@@ -71,7 +91,7 @@ public class GridManager : MonoBehaviour
     // Events
     public event Action OnProcessingStarted;
     public event Action OnProcessingFinished;
-    public event Action<int> OnScoreAwarded; // skor yang diberikan per batch destroy
+    public event Action<int> OnScoreAwarded;
 
     private void Start()
     {
@@ -119,8 +139,7 @@ public class GridManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Spawn satu piece pada posisi grid (x, y) dengan memastikan tidak terjadi match awal.
-    /// Piece langsung muncul di posisi grid (tanpa animasi jatuh).
+    /// Spawn satu piece pada posisi grid (x, y) tanpa match awal.
     /// </summary>
     private void SpawnPieceAt(int x, int y)
     {
@@ -140,15 +159,13 @@ public class GridManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Spawn piece baru di atas layar dan animasikan jatuh ke posisi grid.
-    /// Digunakan saat refill setelah gravity.
+    /// Spawn piece baru di atas layar dengan animasi jatuh.
     /// </summary>
     private void SpawnPieceWithDropAnimation(int x, int y)
     {
         int prefabIndex = GetSafePrefabIndex(x, y);
         Vector2 targetPos = GridToWorldPosition(x, y);
 
-        // Spawn di atas layar (offset ke atas berdasarkan kolom kosong yang tersisa)
         float spawnOffsetY = (height - y) * (cellSize + spacing);
         Vector2 spawnPos = new Vector2(targetPos.x, gridOffset.y + height * (cellSize + spacing) + spawnOffsetY);
 
@@ -163,7 +180,6 @@ public class GridManager : MonoBehaviour
         }
         else
         {
-            // Fallback tanpa Candy component — langsung set posisi
             piece.transform.position = (Vector3)targetPos;
         }
 
@@ -171,7 +187,7 @@ public class GridManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Memilih index prefab secara acak yang TIDAK membentuk match-3 horizontal atau vertikal.
+    /// Memilih index prefab yang TIDAK membentuk match-3 awal.
     /// </summary>
     private int GetSafePrefabIndex(int x, int y)
     {
@@ -182,7 +198,6 @@ public class GridManager : MonoBehaviour
             availableIndices.Add(i);
         }
 
-        // Cek horizontal — jika 2 piece di kiri memiliki tipe yang sama, exclude tipe tersebut
         if (x >= 2)
         {
             int leftType1 = GetPieceType(x - 1, y);
@@ -194,7 +209,6 @@ public class GridManager : MonoBehaviour
             }
         }
 
-        // Cek vertikal — jika 2 piece di bawah memiliki tipe yang sama, exclude tipe tersebut
         if (y >= 2)
         {
             int belowType1 = GetPieceType(x, y - 1);
@@ -206,13 +220,12 @@ public class GridManager : MonoBehaviour
             }
         }
 
-        // Pilih secara acak dari index yang tersisa
         if (availableIndices.Count == 0)
         {
-            return Random.Range(0, piecePrefabs.Length);
+            return UnityEngine.Random.Range(0, piecePrefabs.Length);
         }
 
-        return availableIndices[Random.Range(0, availableIndices.Count)];
+        return availableIndices[UnityEngine.Random.Range(0, availableIndices.Count)];
     }
 
     #endregion
@@ -220,9 +233,8 @@ public class GridManager : MonoBehaviour
     #region Match Detection
 
     /// <summary>
-    /// Mendapatkan tipe piece (prefab index) pada koordinat grid tertentu.
+    /// Mendapatkan tipe piece pada koordinat grid.
     /// </summary>
-    /// <returns>Index tipe piece, atau -1 jika kosong/invalid.</returns>
     public int GetPieceType(int x, int y)
     {
         if (x < 0 || x >= width || y < 0 || y >= height)
@@ -236,15 +248,22 @@ public class GridManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Deteksi semua match (horizontal dan vertikal, minimal 3) di seluruh board.
-    /// Juga mendeteksi match lebih dari 3 (4, 5, dst.) sebagai satu grup.
+    /// Mendapatkan Candy component pada posisi grid.
     /// </summary>
-    /// <returns>HashSet berisi koordinat semua piece yang termasuk match.</returns>
+    private Candy GetCandyAt(int x, int y)
+    {
+        if (!IsValidPosition(x, y) || Board[x, y] == null) return null;
+        return Board[x, y].GetComponent<Candy>();
+    }
+
+    /// <summary>
+    /// Deteksi semua match di board. Mengembalikan posisi dan juga MatchGroup info.
+    /// </summary>
     public HashSet<Vector2Int> FindAllMatches()
     {
         HashSet<Vector2Int> matchedPositions = new HashSet<Vector2Int>();
 
-        // --- Cek horizontal ---
+        // Cek horizontal
         for (int y = 0; y < height; y++)
         {
             int matchStart = 0;
@@ -259,7 +278,6 @@ public class GridManager : MonoBehaviour
                     continue;
                 }
 
-                // Hitung panjang berurutan dengan tipe sama
                 int matchEnd = matchStart + 1;
                 while (matchEnd < width && GetPieceType(matchEnd, y) == type)
                 {
@@ -268,7 +286,6 @@ public class GridManager : MonoBehaviour
 
                 int matchLength = matchEnd - matchStart;
 
-                // Jika 3 atau lebih, tambahkan semua ke set
                 if (matchLength >= 3)
                 {
                     for (int i = matchStart; i < matchEnd; i++)
@@ -281,7 +298,7 @@ public class GridManager : MonoBehaviour
             }
         }
 
-        // --- Cek vertikal ---
+        // Cek vertikal
         for (int x = 0; x < width; x++)
         {
             int matchStart = 0;
@@ -320,19 +337,100 @@ public class GridManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Cek match hanya di sekitar posisi tertentu (optimisasi setelah swap).
+    /// Deteksi match groups dengan informasi panjang dan orientasi.
+    /// Digunakan untuk menentukan apakah perlu spawn LinePiece.
     /// </summary>
-    /// <param name="positions">Posisi-posisi yang perlu dicek.</param>
-    /// <returns>HashSet berisi koordinat piece yang match.</returns>
+    public List<MatchGroup> FindAllMatchGroups()
+    {
+        List<MatchGroup> groups = new List<MatchGroup>();
+
+        // Horizontal groups
+        for (int y = 0; y < height; y++)
+        {
+            int matchStart = 0;
+
+            while (matchStart < width)
+            {
+                int type = GetPieceType(matchStart, y);
+
+                if (type == -1)
+                {
+                    matchStart++;
+                    continue;
+                }
+
+                int matchEnd = matchStart + 1;
+                while (matchEnd < width && GetPieceType(matchEnd, y) == type)
+                {
+                    matchEnd++;
+                }
+
+                int matchLength = matchEnd - matchStart;
+
+                if (matchLength >= 3)
+                {
+                    List<Vector2Int> positions = new List<Vector2Int>();
+                    for (int i = matchStart; i < matchEnd; i++)
+                    {
+                        positions.Add(new Vector2Int(i, y));
+                    }
+                    groups.Add(new MatchGroup(positions, true));
+                }
+
+                matchStart = matchEnd;
+            }
+        }
+
+        // Vertical groups
+        for (int x = 0; x < width; x++)
+        {
+            int matchStart = 0;
+
+            while (matchStart < height)
+            {
+                int type = GetPieceType(x, matchStart);
+
+                if (type == -1)
+                {
+                    matchStart++;
+                    continue;
+                }
+
+                int matchEnd = matchStart + 1;
+                while (matchEnd < height && GetPieceType(x, matchEnd) == type)
+                {
+                    matchEnd++;
+                }
+
+                int matchLength = matchEnd - matchStart;
+
+                if (matchLength >= 3)
+                {
+                    List<Vector2Int> positions = new List<Vector2Int>();
+                    for (int i = matchStart; i < matchEnd; i++)
+                    {
+                        positions.Add(new Vector2Int(x, i));
+                    }
+                    groups.Add(new MatchGroup(positions, false));
+                }
+
+                matchStart = matchEnd;
+            }
+        }
+
+        return groups;
+    }
+
+    /// <summary>
+    /// Cek match hanya di sekitar posisi tertentu.
+    /// </summary>
     public HashSet<Vector2Int> FindMatchesAt(params Vector2Int[] positions)
     {
         HashSet<Vector2Int> matchedPositions = new HashSet<Vector2Int>();
 
         foreach (Vector2Int pos in positions)
         {
-            // Cek horizontal dari posisi ini
             FindLineMatch(pos.x, pos.y, 1, 0, matchedPositions);
-            // Cek vertikal dari posisi ini
             FindLineMatch(pos.x, pos.y, 0, 1, matchedPositions);
         }
 
@@ -340,7 +438,7 @@ public class GridManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Mencari match di satu garis (horizontal atau vertikal) dari posisi awal.
+    /// Mencari match di satu garis dari posisi awal.
     /// </summary>
     private void FindLineMatch(int startX, int startY, int dirX, int dirY, HashSet<Vector2Int> results)
     {
@@ -350,7 +448,6 @@ public class GridManager : MonoBehaviour
         List<Vector2Int> line = new List<Vector2Int>();
         line.Add(new Vector2Int(startX, startY));
 
-        // Cari ke arah positif
         int x = startX + dirX;
         int y = startY + dirY;
         while (IsValidPosition(x, y) && GetPieceType(x, y) == type)
@@ -360,7 +457,6 @@ public class GridManager : MonoBehaviour
             y += dirY;
         }
 
-        // Cari ke arah negatif
         x = startX - dirX;
         y = startY - dirY;
         while (IsValidPosition(x, y) && GetPieceType(x, y) == type)
@@ -370,7 +466,6 @@ public class GridManager : MonoBehaviour
             y -= dirY;
         }
 
-        // Jika total 3 atau lebih, tambahkan ke hasil
         if (line.Count >= 3)
         {
             foreach (Vector2Int pos in line)
@@ -385,31 +480,80 @@ public class GridManager : MonoBehaviour
     #region Destroy, Gravity & Refill
 
     /// <summary>
-    /// Entry point utama: menghancurkan match, apply gravity, refill, dan cek chain.
-    /// Dipanggil oleh Candy.cs setelah swap yang valid.
+    /// Entry point utama: hancurkan match, spawn LinePiece jika match-4, apply gravity, refill, chain.
     /// </summary>
-    /// <param name="matches">Set posisi yang harus dihancurkan.</param>
     public IEnumerator DestroyMatchesAndRefill(HashSet<Vector2Int> matches)
     {
         IsProcessing = true;
         OnProcessingStarted?.Invoke();
         currentComboCount = 0;
 
-        yield return StartCoroutine(ProcessMatchCycle(matches));
+        yield return StartCoroutine(ProcessMatchCycle());
 
         IsProcessing = false;
         OnProcessingFinished?.Invoke();
     }
 
     /// <summary>
-    /// Siklus rekursif: destroy → gravity → refill → cek ulang.
+    /// Siklus rekursif: detect groups → spawn specials → trigger specials → destroy → gravity → refill → cek ulang.
     /// </summary>
-    private IEnumerator ProcessMatchCycle(HashSet<Vector2Int> matches)
+    private IEnumerator ProcessMatchCycle()
     {
         currentComboCount++;
 
-        // --- 1. Hitung dan berikan skor ---
-        int scoreGained = CalculateScore(matches.Count, currentComboCount);
+        // --- 1. Deteksi match groups untuk menentukan special pieces ---
+        List<MatchGroup> matchGroups = FindAllMatchGroups();
+
+        if (matchGroups.Count == 0) yield break;
+
+        // --- 2. Kumpulkan semua posisi yang akan dihancurkan ---
+        HashSet<Vector2Int> allMatched = new HashSet<Vector2Int>();
+        List<LinePieceSpawnInfo> linePieceSpawns = new List<LinePieceSpawnInfo>();
+
+        foreach (MatchGroup group in matchGroups)
+        {
+            foreach (Vector2Int pos in group.Positions)
+            {
+                allMatched.Add(pos);
+            }
+
+            // Jika match-4 (exactly 4), spawn LinePiece
+            if (group.Length == 4)
+            {
+                // LinePiece spawn di posisi tengah dari match
+                Vector2Int spawnPos = group.Positions[1]; // posisi ke-2 dari 4
+                SpecialType lineType = group.IsHorizontal
+                    ? SpecialType.LineVertical   // Match horizontal → blast vertikal (perpendicular)
+                    : SpecialType.LineHorizontal; // Match vertikal → blast horizontal
+
+                linePieceSpawns.Add(new LinePieceSpawnInfo
+                {
+                    Position = spawnPos,
+                    Type = lineType,
+                    PieceColorType = GetPieceType(spawnPos.x, spawnPos.y)
+                });
+            }
+        }
+
+        // --- 3. Cek dan trigger LinePiece yang ada di posisi match ---
+        HashSet<Vector2Int> lineBlastPositions = new HashSet<Vector2Int>();
+        CollectLineBlastTargets(allMatched, lineBlastPositions);
+
+        // Tambahkan line blast positions ke set destroy
+        foreach (Vector2Int pos in lineBlastPositions)
+        {
+            allMatched.Add(pos);
+        }
+
+        // --- 4. Hitung skor ---
+        int scoreGained = CalculateScore(allMatched.Count, currentComboCount);
+
+        // Bonus skor untuk line blast
+        if (lineBlastPositions.Count > 0)
+        {
+            scoreGained += lineBlastBonusScore;
+        }
+
         OnScoreAwarded?.Invoke(scoreGained);
 
         if (GameManager.Instance != null)
@@ -417,40 +561,124 @@ public class GridManager : MonoBehaviour
             GameManager.Instance.AddScore(scoreGained);
         }
 
-        // --- 2. Hancurkan semua piece yang match ---
-        DestroyMatches(matches);
+        // --- 5. Hancurkan semua piece ---
+        // Simpan posisi yang akan jadi LinePiece agar tidak dihancurkan
+        HashSet<Vector2Int> preservedPositions = new HashSet<Vector2Int>();
+        foreach (var spawnInfo in linePieceSpawns)
+        {
+            preservedPositions.Add(spawnInfo.Position);
+        }
+
+        foreach (Vector2Int pos in allMatched)
+        {
+            if (!preservedPositions.Contains(pos))
+            {
+                DestroyPieceAt(pos.x, pos.y);
+            }
+        }
+
+        // --- 6. Convert preserved pieces menjadi LinePiece ---
+        foreach (var spawnInfo in linePieceSpawns)
+        {
+            Candy candy = GetCandyAt(spawnInfo.Position.x, spawnInfo.Position.y);
+            if (candy != null)
+            {
+                candy.SetAsLinePiece(spawnInfo.Type);
+            }
+        }
 
         yield return new WaitForSeconds(destroyDelay);
 
-        // --- 3. Apply gravity — jatuhkan piece ke bawah ---
+        // --- 7. Apply gravity ---
         yield return StartCoroutine(ApplyGravity());
 
         yield return new WaitForSeconds(postRefillDelay);
 
-        // --- 4. Spawn piece baru di slot kosong (baris atas) ---
+        // --- 8. Refill ---
         yield return StartCoroutine(RefillEmptySlots());
 
         yield return new WaitForSeconds(postRefillDelay);
 
-        // --- 5. Cek match baru (chain/combo) ---
+        // --- 9. Cek match baru (chain/combo) ---
         HashSet<Vector2Int> newMatches = FindAllMatches();
         if (newMatches.Count > 0)
         {
-            yield return StartCoroutine(ProcessMatchCycle(newMatches));
+            yield return StartCoroutine(ProcessMatchCycle());
         }
     }
 
     /// <summary>
-    /// Menghitung skor berdasarkan jumlah piece dan combo multiplier.
-    /// Match 3 = base, Match 4 = base + bonus, Match 5+ = base + bonus lebih besar.
-    /// Combo meningkatkan skor setiap chain berturut-turut.
+    /// Kumpulkan semua posisi yang harus dihancurkan akibat LinePiece yang terkena match.
+    /// </summary>
+    private void CollectLineBlastTargets(HashSet<Vector2Int> matchedPositions, HashSet<Vector2Int> blastTargets)
+    {
+        // Cek setiap posisi yang di-match, apakah ada LinePiece
+        foreach (Vector2Int pos in matchedPositions)
+        {
+            Candy candy = GetCandyAt(pos.x, pos.y);
+            if (candy == null || !candy.IsSpecial) continue;
+
+            // LinePiece terdeteksi di posisi match — trigger blast
+            if (candy.Special == SpecialType.LineHorizontal)
+            {
+                // Hancurkan seluruh baris
+                for (int x = 0; x < width; x++)
+                {
+                    blastTargets.Add(new Vector2Int(x, pos.y));
+                }
+                Debug.Log($"GridManager: LineHorizontal blast at row {pos.y}");
+            }
+            else if (candy.Special == SpecialType.LineVertical)
+            {
+                // Hancurkan seluruh kolom
+                for (int y = 0; y < height; y++)
+                {
+                    blastTargets.Add(new Vector2Int(pos.x, y));
+                }
+                Debug.Log($"GridManager: LineVertical blast at column {pos.x}");
+            }
+        }
+
+        // Recursive: cek apakah blast mengenai LinePiece lain (chain reaction)
+        HashSet<Vector2Int> additionalBlasts = new HashSet<Vector2Int>();
+        foreach (Vector2Int pos in blastTargets)
+        {
+            if (matchedPositions.Contains(pos)) continue; // sudah diproses
+
+            Candy candy = GetCandyAt(pos.x, pos.y);
+            if (candy == null || !candy.IsSpecial) continue;
+
+            // LinePiece lain terkena blast — trigger juga
+            if (candy.Special == SpecialType.LineHorizontal)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    additionalBlasts.Add(new Vector2Int(x, pos.y));
+                }
+            }
+            else if (candy.Special == SpecialType.LineVertical)
+            {
+                for (int y = 0; y < height; y++)
+                {
+                    additionalBlasts.Add(new Vector2Int(pos.x, y));
+                }
+            }
+        }
+
+        // Gabungkan additional blasts
+        foreach (Vector2Int pos in additionalBlasts)
+        {
+            blastTargets.Add(pos);
+        }
+    }
+
+    /// <summary>
+    /// Menghitung skor berdasarkan jumlah piece dan combo.
     /// </summary>
     private int CalculateScore(int pieceCount, int comboLevel)
     {
-        // Base score per piece
         int baseScore = pieceCount * baseScorePerPiece;
 
-        // Bonus untuk match lebih dari 3
         int matchBonus = 0;
         if (pieceCount == 4)
             matchBonus = 20;
@@ -459,25 +687,13 @@ public class GridManager : MonoBehaviour
         else if (pieceCount > 5)
             matchBonus = 50 + (pieceCount - 5) * 30;
 
-        // Combo multiplier (chain ke-2 = +5, chain ke-3 = +10, dst.)
         int comboBonus = (comboLevel - 1) * comboMultiplierStep * pieceCount;
 
         return baseScore + matchBonus + comboBonus;
     }
 
     /// <summary>
-    /// Menghancurkan semua piece pada posisi yang diberikan.
-    /// </summary>
-    private void DestroyMatches(HashSet<Vector2Int> matches)
-    {
-        foreach (Vector2Int pos in matches)
-        {
-            DestroyPieceAt(pos.x, pos.y);
-        }
-    }
-
-    /// <summary>
-    /// Menghapus piece pada posisi grid tertentu.
+    /// Menghapus piece pada posisi grid.
     /// </summary>
     public void DestroyPieceAt(int x, int y)
     {
@@ -488,8 +704,7 @@ public class GridManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Gravity Drop — menurunkan semua piece ke posisi kosong di bawahnya.
-    /// Iterasi dari bawah ke atas per kolom agar piece jatuh secara berurutan.
+    /// Gravity Drop — menurunkan piece ke posisi kosong di bawah.
     /// </summary>
     public IEnumerator ApplyGravity()
     {
@@ -501,23 +716,19 @@ public class GridManager : MonoBehaviour
 
             for (int x = 0; x < width; x++)
             {
-                // Iterasi dari baris kedua dari bawah ke atas
                 for (int y = 1; y < height; y++)
                 {
                     if (Board[x, y] != null && Board[x, y - 1] == null)
                     {
-                        // Cari posisi paling bawah yang kosong di kolom ini
                         int targetY = y - 1;
                         while (targetY > 0 && Board[x, targetY - 1] == null)
                         {
                             targetY--;
                         }
 
-                        // Pindahkan piece
                         Board[x, targetY] = Board[x, y];
                         Board[x, y] = null;
 
-                        // Update posisi visual dengan animasi
                         Candy candy = Board[x, targetY].GetComponent<Candy>();
                         if (candy != null)
                         {
@@ -539,8 +750,7 @@ public class GridManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Mengisi ulang slot kosong dengan piece baru yang jatuh dari atas.
-    /// Scan dari bawah ke atas agar piece di bawah spawn duluan.
+    /// Mengisi ulang slot kosong dengan piece baru.
     /// </summary>
     private IEnumerator RefillEmptySlots()
     {
@@ -562,7 +772,7 @@ public class GridManager : MonoBehaviour
     #region Utilities
 
     /// <summary>
-    /// Konversi koordinat grid (x, y) ke posisi dunia (world position).
+    /// Konversi koordinat grid ke posisi world.
     /// </summary>
     public Vector2 GridToWorldPosition(int x, int y)
     {
@@ -572,7 +782,7 @@ public class GridManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Cek apakah koordinat valid di dalam batas grid.
+    /// Cek apakah koordinat valid.
     /// </summary>
     public bool IsValidPosition(int x, int y)
     {
@@ -585,5 +795,19 @@ public class GridManager : MonoBehaviour
     public int Width => width;
     public int Height => height;
     public int CurrentCombo => currentComboCount;
+    #endregion
+
+    #region Helper Structs
+
+    /// <summary>
+    /// Info untuk spawn LinePiece setelah match-4.
+    /// </summary>
+    private struct LinePieceSpawnInfo
+    {
+        public Vector2Int Position;
+        public SpecialType Type;
+        public int PieceColorType;
+    }
+
     #endregion
 }
