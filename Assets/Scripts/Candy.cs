@@ -3,8 +3,18 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 
 /// <summary>
+/// Tipe spesial piece.
+/// </summary>
+public enum SpecialType
+{
+    None,
+    LineHorizontal,  // Hancurkan seluruh baris
+    LineVertical     // Hancurkan seluruh kolom
+}
+
+/// <summary>
 /// Component yang menempel pada setiap prefab piece/candy di grid.
-/// Menangani input swipe, animasi pertukaran posisi (Lerp), dan komunikasi dengan GridManager.
+/// Menangani input swipe, animasi pertukaran posisi (Lerp), power-up state, dan komunikasi dengan GridManager.
 /// </summary>
 [RequireComponent(typeof(SpriteRenderer))]
 [RequireComponent(typeof(BoxCollider2D))]
@@ -27,17 +37,41 @@ public class Candy : MonoBehaviour, IPointerDownHandler, IPointerUpHandler
     /// </summary>
     public int PieceType { get; private set; }
 
+    /// <summary>
+    /// Tipe spesial piece ini (None = biasa).
+    /// </summary>
+    public SpecialType Special { get; private set; } = SpecialType.None;
+
+    /// <summary>
+    /// Apakah piece ini merupakan special/power-up piece.
+    /// </summary>
+    public bool IsSpecial => Special != SpecialType.None;
+
     #endregion
 
     [Header("Animation Settings")]
     [SerializeField] private float swapDuration = 0.2f;
     [SerializeField] private float swipeThreshold = 0.3f;
 
+    [Header("Special Visual")]
+    [Tooltip("Sprite overlay untuk LinePiece horizontal (opsional, bisa null).")]
+    [SerializeField] private Sprite lineHorizontalOverlay;
+    [Tooltip("Sprite overlay untuk LinePiece vertikal (opsional, bisa null).")]
+    [SerializeField] private Sprite lineVerticalOverlay;
+    [Tooltip("GameObject child yang menampilkan indicator spesial (arrow/glow).")]
+    [SerializeField] private GameObject specialIndicator;
+
     // State
     private Vector2 pointerDownPos;
     private Vector2 pointerUpPos;
     private bool isMoving = false;
     private bool inputEnabled = true;
+    private SpriteRenderer spriteRenderer;
+
+    private void Awake()
+    {
+        spriteRenderer = GetComponent<SpriteRenderer>();
+    }
 
     /// <summary>
     /// Dipanggil oleh GridManager saat piece di-spawn.
@@ -50,6 +84,10 @@ public class Candy : MonoBehaviour, IPointerDownHandler, IPointerUpHandler
         GridX = x;
         GridY = y;
         PieceType = type;
+        Special = SpecialType.None;
+
+        if (specialIndicator != null)
+            specialIndicator.SetActive(false);
     }
 
     /// <summary>
@@ -59,20 +97,86 @@ public class Candy : MonoBehaviour, IPointerDownHandler, IPointerUpHandler
     {
         GridX = x;
         GridY = y;
-        gameObject.name = $"Piece ({x},{y})";
+        gameObject.name = $"Piece ({x},{y}){(IsSpecial ? $" [{Special}]" : "")}";
     }
+
+    #region Special Piece Setup
+
+    /// <summary>
+    /// Mengubah piece ini menjadi LinePiece (horizontal atau vertikal).
+    /// Dipanggil oleh GridManager saat match-4 terdeteksi.
+    /// </summary>
+    /// <param name="direction">Arah blast: LineHorizontal atau LineVertical.</param>
+    public void SetAsLinePiece(SpecialType direction)
+    {
+        Special = direction;
+        gameObject.name = $"Piece ({GridX},{GridY}) [{Special}]";
+
+        // Visual indicator
+        UpdateSpecialVisual();
+
+        Debug.Log($"Candy: Piece ({GridX},{GridY}) set as {Special}");
+    }
+
+    /// <summary>
+    /// Update tampilan visual sesuai tipe spesial.
+    /// </summary>
+    private void UpdateSpecialVisual()
+    {
+        if (spriteRenderer == null) return;
+
+        switch (Special)
+        {
+            case SpecialType.LineHorizontal:
+                if (lineHorizontalOverlay != null)
+                    spriteRenderer.sprite = lineHorizontalOverlay;
+                else
+                    // Fallback: tint warna untuk indikasi
+                    spriteRenderer.color = new Color(1f, 1f, 1f, 1f);
+                break;
+
+            case SpecialType.LineVertical:
+                if (lineVerticalOverlay != null)
+                    spriteRenderer.sprite = lineVerticalOverlay;
+                else
+                    spriteRenderer.color = new Color(1f, 1f, 1f, 1f);
+                break;
+        }
+
+        // Aktifkan indicator child (arrow/glow) jika ada
+        if (specialIndicator != null)
+        {
+            specialIndicator.SetActive(true);
+
+            // Rotasi arrow sesuai arah
+            if (Special == SpecialType.LineHorizontal)
+                specialIndicator.transform.rotation = Quaternion.Euler(0, 0, 0);
+            else if (Special == SpecialType.LineVertical)
+                specialIndicator.transform.rotation = Quaternion.Euler(0, 0, 90);
+        }
+    }
+
+    #endregion
 
     #region Input Detection
 
     public void OnPointerDown(PointerEventData eventData)
     {
         if (!inputEnabled || isMoving) return;
+
+        // Block input jika grid sedang processing
+        if (GridManager.Instance != null && GridManager.Instance.IsProcessing) return;
+
         pointerDownPos = eventData.position;
     }
 
     public void OnPointerUp(PointerEventData eventData)
     {
         if (!inputEnabled || isMoving) return;
+
+        // Block input jika grid sedang processing
+        if (GridManager.Instance != null && GridManager.Instance.IsProcessing) return;
+
         pointerUpPos = eventData.position;
 
         Vector2 swipeDelta = pointerUpPos - pointerDownPos;
@@ -102,18 +206,14 @@ public class Candy : MonoBehaviour, IPointerDownHandler, IPointerUpHandler
     /// <summary>
     /// Menentukan arah swipe (4 arah) berdasarkan delta posisi pointer.
     /// </summary>
-    /// <param name="delta">Selisih posisi pointer down dan up.</param>
-    /// <returns>Vektor arah (1,0), (-1,0), (0,1), atau (0,-1).</returns>
     private Vector2Int GetSwipeDirection(Vector2 delta)
     {
         if (Mathf.Abs(delta.x) > Mathf.Abs(delta.y))
         {
-            // Horizontal
             return delta.x > 0 ? Vector2Int.right : Vector2Int.left;
         }
         else
         {
-            // Vertikal
             return delta.y > 0 ? Vector2Int.up : Vector2Int.down;
         }
     }
@@ -209,11 +309,9 @@ public class Candy : MonoBehaviour, IPointerDownHandler, IPointerUpHandler
     /// </summary>
     private void SwapInGrid(Candy target)
     {
-        // Swap di Board array
         GridManager.Instance.Board[GridX, GridY] = target.gameObject;
         GridManager.Instance.Board[target.GridX, target.GridY] = this.gameObject;
 
-        // Swap koordinat internal
         int tempX = GridX;
         int tempY = GridY;
 
@@ -228,7 +326,6 @@ public class Candy : MonoBehaviour, IPointerDownHandler, IPointerUpHandler
     /// <summary>
     /// Animasi piece bergerak ke posisi baru (digunakan oleh gravity drop).
     /// </summary>
-    /// <param name="targetPosition">Posisi world target.</param>
     public void MoveToPosition(Vector2 targetPosition)
     {
         StartCoroutine(AnimateMoveTo(targetPosition));
@@ -244,7 +341,7 @@ public class Candy : MonoBehaviour, IPointerDownHandler, IPointerUpHandler
         Vector3 endPos = new Vector3(targetPosition.x, targetPosition.y, transform.position.z);
 
         float elapsed = 0f;
-        float moveDuration = swapDuration * 0.8f; // Sedikit lebih cepat dari swap
+        float moveDuration = swapDuration * 0.8f;
 
         while (elapsed < moveDuration)
         {
