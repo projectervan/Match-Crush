@@ -42,6 +42,10 @@ public class GameManager : MonoBehaviour
     [SerializeField] private int extraMovesCost = 50;
     [SerializeField] private int extraMovesAmount = 5;
 
+    [Header("Coins Reward")]
+    [Tooltip("Koin per sisa move saat menang.")]
+    [SerializeField] private int coinsPerMoveLeft = 10;
+
     // State
     public GameState CurrentState { get; private set; } = GameState.Playing;
     public int CurrentLevel { get; private set; }
@@ -62,7 +66,7 @@ public class GameManager : MonoBehaviour
     public event Action<GameState> OnStateChanged;
     public event Action OnVictory;
     public event Action OnGameOver;
-    public event Action OnOutOfMoves;  // Tampilkan panel "Beli 5 Moves"
+    public event Action OnOutOfMoves;
 
     private void Start()
     {
@@ -88,15 +92,22 @@ public class GameManager : MonoBehaviour
             CurrentLevel = 1;
         }
 
-        // Load coins (TODO: bisa dari Firestore juga, sementara default 100)
-        Coins = 100;
-
         // Hitung target dan move limit berdasarkan PRD formula
         TargetScore = CurrentLevel * 1000;
         MoveLimit = Mathf.Max(10, 30 - (CurrentLevel / 5));
         MovesRemaining = MoveLimit;
         CurrentScore = 0;
         CurrentState = GameState.Playing;
+
+        // Load coins dari Firestore
+        if (DatabaseManager.Instance != null && DatabaseManager.Instance.CachedUserData != null)
+        {
+            Coins = DatabaseManager.Instance.CachedUserData.Coins;
+        }
+        else
+        {
+            Coins = 100; // Default untuk testing
+        }
 
         // Notify UI
         OnScoreChanged?.Invoke(CurrentScore);
@@ -201,15 +212,11 @@ public class GameManager : MonoBehaviour
     {
         if (CurrentState != GameState.OutOfMoves) return false;
 
-        if (Coins < extraMovesCost)
+        if (!SpendCoins(extraMovesCost))
         {
             Debug.Log("GameManager: Koin tidak cukup untuk membeli extra moves.");
             return false;
         }
-
-        // Kurangi koin
-        Coins -= extraMovesCost;
-        OnCoinsChanged?.Invoke(Coins);
 
         // Tambah moves
         MovesRemaining += extraMovesAmount;
@@ -245,13 +252,22 @@ public class GameManager : MonoBehaviour
         OnStateChanged?.Invoke(CurrentState);
         OnVictory?.Invoke();
 
-        Debug.Log($"GameManager: VICTORY! Level {CurrentLevel} cleared.");
+        // Hitung Moves Left Bonus: 10 koin x sisa moves
+        int movesLeftBonus = MovesRemaining * coinsPerMoveLeft;
+        if (movesLeftBonus > 0)
+        {
+            AddCoins(movesLeftBonus);
+            Debug.Log($"GameManager: Moves Left Bonus — +{movesLeftBonus} coins ({MovesRemaining} moves x {coinsPerMoveLeft})");
+        }
 
-        // Update level di Firestore
+        Debug.Log($"GameManager: VICTORY! Level {CurrentLevel} cleared. Total Coins: {Coins}");
+
+        // Update level dan koin di Firestore
         if (DatabaseManager.Instance != null)
         {
             DatabaseManager.Instance.IncrementLevel();
             DatabaseManager.Instance.SaveHighScore(CurrentScore);
+            DatabaseManager.Instance.SaveCoins(Coins);
         }
     }
 
@@ -282,8 +298,9 @@ public class GameManager : MonoBehaviour
     #region Coins
 
     /// <summary>
-    /// Menambah koin (reward selesai level, daily, dll).
+    /// Menambah koin dan notify UI.
     /// </summary>
+    /// <param name="amount">Jumlah koin yang ditambahkan.</param>
     public void AddCoins(int amount)
     {
         if (amount <= 0) return;
@@ -291,6 +308,27 @@ public class GameManager : MonoBehaviour
         Coins += amount;
         OnCoinsChanged?.Invoke(Coins);
         Debug.Log($"GameManager: +{amount} coins. Total: {Coins}");
+    }
+
+    /// <summary>
+    /// Mengurangi koin. Mengembalikan true jika berhasil (cukup saldo).
+    /// </summary>
+    /// <param name="amount">Jumlah koin yang dikurangi.</param>
+    public bool SpendCoins(int amount)
+    {
+        if (amount <= 0 || Coins < amount) return false;
+
+        Coins -= amount;
+        OnCoinsChanged?.Invoke(Coins);
+
+        // Simpan ke Firestore
+        if (DatabaseManager.Instance != null)
+        {
+            DatabaseManager.Instance.SaveCoins(Coins);
+        }
+
+        Debug.Log($"GameManager: -{amount} coins. Total: {Coins}");
+        return true;
     }
 
     /// <summary>

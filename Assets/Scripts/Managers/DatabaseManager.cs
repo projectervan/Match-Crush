@@ -25,6 +25,9 @@ public class UserData
 
     [FirestoreProperty]
     public Timestamp LastLifeLost { get; set; }
+
+    [FirestoreProperty]
+    public int Coins { get; set; } = 100;
 }
 
 /// <summary>
@@ -101,7 +104,8 @@ public class DatabaseManager : MonoBehaviour
                     CurrentLevel = 1,
                     HighScore = 0,
                     Lives = 5,
-                    LastLifeLost = Timestamp.FromDateTime(DateTime.UtcNow)
+                    LastLifeLost = Timestamp.FromDateTime(DateTime.UtcNow),
+                    Coins = 100
                 };
 
                 await docRef.SetAsync(newUser);
@@ -269,6 +273,8 @@ public class DatabaseManager : MonoBehaviour
                     CachedUserData.Lives = (int)updates["Lives"];
                 if (updates.ContainsKey("LastLifeLost"))
                     CachedUserData.LastLifeLost = (Timestamp)updates["LastLifeLost"];
+                if (updates.ContainsKey("Coins"))
+                    CachedUserData.Coins = (int)updates["Coins"];
             }
 
             Debug.Log("DatabaseManager: Multiple fields updated successfully.");
@@ -279,6 +285,46 @@ public class DatabaseManager : MonoBehaviour
             OnDatabaseError?.Invoke(e.Message);
         }
     }
+
+    #region Coins
+
+    /// <summary>
+    /// Event dipanggil saat koin berhasil disimpan.
+    /// </summary>
+    public event Action<int> OnCoinsUpdated;
+
+    /// <summary>
+    /// Menyimpan jumlah koin ke Firestore.
+    /// </summary>
+    /// <param name="coins">Jumlah koin saat ini.</param>
+    public async void SaveCoins(int coins)
+    {
+        FirebaseUser user = AuthManager.Instance?.CurrentUser;
+        if (user == null)
+        {
+            Debug.LogError("DatabaseManager: Tidak ada user yang login.");
+            return;
+        }
+
+        try
+        {
+            DocumentReference docRef = GetUserDocument(user.UserId);
+            await docRef.UpdateAsync("Coins", coins);
+
+            if (CachedUserData != null)
+                CachedUserData.Coins = coins;
+
+            OnCoinsUpdated?.Invoke(coins);
+            Debug.Log($"DatabaseManager: Coins saved — {coins}");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"DatabaseManager: Error saving coins — {e.Message}");
+            OnDatabaseError?.Invoke(e.Message);
+        }
+    }
+
+    #endregion
 
     #region Leaderboard
 
