@@ -19,6 +19,12 @@ public class UserData
 
     [FirestoreProperty]
     public int HighScore { get; set; } = 0;
+
+    [FirestoreProperty]
+    public int Lives { get; set; } = 5;
+
+    [FirestoreProperty]
+    public Timestamp LastLifeLost { get; set; }
 }
 
 /// <summary>
@@ -53,6 +59,7 @@ public class DatabaseManager : MonoBehaviour
     // Events untuk UI binding
     public event Action<UserData> OnUserDataLoaded;
     public event Action<string> OnDatabaseError;
+    public event Action<int> OnLivesUpdated;
 
     private void Start()
     {
@@ -92,7 +99,9 @@ public class DatabaseManager : MonoBehaviour
                 {
                     DisplayName = user.DisplayName ?? "Player",
                     CurrentLevel = 1,
-                    HighScore = 0
+                    HighScore = 0,
+                    Lives = 5,
+                    LastLifeLost = Timestamp.FromDateTime(DateTime.UtcNow)
                 };
 
                 await docRef.SetAsync(newUser);
@@ -103,7 +112,7 @@ public class DatabaseManager : MonoBehaviour
             {
                 // User sudah ada — load data
                 CachedUserData = snapshot.ConvertTo<UserData>();
-                Debug.Log($"DatabaseManager: Existing user loaded — Level {CachedUserData.CurrentLevel}");
+                Debug.Log($"DatabaseManager: Existing user loaded — Level {CachedUserData.CurrentLevel}, Lives {CachedUserData.Lives}");
             }
 
             OnUserDataLoaded?.Invoke(CachedUserData);
@@ -135,7 +144,7 @@ public class DatabaseManager : MonoBehaviour
             if (snapshot.Exists)
             {
                 CachedUserData = snapshot.ConvertTo<UserData>();
-                Debug.Log($"DatabaseManager: Data loaded — {CachedUserData.DisplayName}, Level {CachedUserData.CurrentLevel}, HighScore {CachedUserData.HighScore}");
+                Debug.Log($"DatabaseManager: Data loaded — {CachedUserData.DisplayName}, Level {CachedUserData.CurrentLevel}, HighScore {CachedUserData.HighScore}, Lives {CachedUserData.Lives}");
                 OnUserDataLoaded?.Invoke(CachedUserData);
             }
             else
@@ -194,7 +203,6 @@ public class DatabaseManager : MonoBehaviour
             return;
         }
 
-        // Hanya update jika skor lebih tinggi dari yang tersimpan
         if (CachedUserData != null && score <= CachedUserData.HighScore)
         {
             Debug.Log("DatabaseManager: Skor tidak lebih tinggi dari HighScore, skip update.");
@@ -257,6 +265,10 @@ public class DatabaseManager : MonoBehaviour
                     CachedUserData.HighScore = (int)updates["HighScore"];
                 if (updates.ContainsKey("DisplayName"))
                     CachedUserData.DisplayName = (string)updates["DisplayName"];
+                if (updates.ContainsKey("Lives"))
+                    CachedUserData.Lives = (int)updates["Lives"];
+                if (updates.ContainsKey("LastLifeLost"))
+                    CachedUserData.LastLifeLost = (Timestamp)updates["LastLifeLost"];
             }
 
             Debug.Log("DatabaseManager: Multiple fields updated successfully.");
@@ -267,4 +279,61 @@ public class DatabaseManager : MonoBehaviour
             OnDatabaseError?.Invoke(e.Message);
         }
     }
+
+    #region Lives Management
+
+    /// <summary>
+    /// Menyimpan Lives dan LastLifeLost ke Firestore.
+    /// Dipanggil oleh LifeManager saat nyawa berubah.
+    /// </summary>
+    /// <param name="lives">Jumlah nyawa saat ini.</param>
+    /// <param name="lastLifeLost">Timestamp terakhir kali nyawa berkurang.</param>
+    public async void SaveLivesData(int lives, DateTime lastLifeLost)
+    {
+        FirebaseUser user = AuthManager.Instance?.CurrentUser;
+        if (user == null)
+        {
+            Debug.LogError("DatabaseManager: Tidak ada user yang login.");
+            return;
+        }
+
+        try
+        {
+            DocumentReference docRef = GetUserDocument(user.UserId);
+            Dictionary<string, object> updates = new Dictionary<string, object>
+            {
+                { "Lives", lives },
+                { "LastLifeLost", Timestamp.FromDateTime(lastLifeLost.ToUniversalTime()) }
+            };
+
+            await docRef.UpdateAsync(updates);
+
+            if (CachedUserData != null)
+            {
+                CachedUserData.Lives = lives;
+                CachedUserData.LastLifeLost = Timestamp.FromDateTime(lastLifeLost.ToUniversalTime());
+            }
+
+            OnLivesUpdated?.Invoke(lives);
+            Debug.Log($"DatabaseManager: Lives saved — {lives}, LastLifeLost — {lastLifeLost}");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"DatabaseManager: Error saving lives — {e.Message}");
+            OnDatabaseError?.Invoke(e.Message);
+        }
+    }
+
+    /// <summary>
+    /// Mengambil DateTime dari LastLifeLost Timestamp.
+    /// </summary>
+    public DateTime GetLastLifeLostTime()
+    {
+        if (CachedUserData == null)
+            return DateTime.UtcNow;
+
+        return CachedUserData.LastLifeLost.ToDateTime();
+    }
+
+    #endregion
 }
