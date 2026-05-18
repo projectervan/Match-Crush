@@ -267,4 +267,67 @@ public class DatabaseManager : MonoBehaviour
             OnDatabaseError?.Invoke(e.Message);
         }
     }
+
+    #region Leaderboard
+
+    /// <summary>
+    /// Event yang dipanggil saat data leaderboard berhasil di-fetch.
+    /// </summary>
+    public event Action<List<LeaderboardEntry>> OnLeaderboardLoaded;
+
+    /// <summary>
+    /// Mengambil top N user dengan HighScore tertinggi dari Firestore, diurutkan descending.
+    /// </summary>
+    /// <param name="topCount">Jumlah user yang diambil (default: 10).</param>
+    public async void GetTopPlayers(int topCount = 10)
+    {
+        try
+        {
+            Query query = db.Collection(USERS_COLLECTION)
+                .OrderByDescending("HighScore")
+                .Limit(topCount);
+
+            QuerySnapshot snapshot = await query.GetSnapshotAsync();
+
+            List<LeaderboardEntry> leaderboard = new List<LeaderboardEntry>();
+            int rank = 1;
+
+            foreach (DocumentSnapshot doc in snapshot.Documents)
+            {
+                UserData userData = doc.ConvertTo<UserData>();
+
+                leaderboard.Add(new LeaderboardEntry
+                {
+                    Rank = rank,
+                    DisplayName = userData.DisplayName ?? "Unknown",
+                    HighScore = userData.HighScore,
+                    CurrentLevel = userData.CurrentLevel
+                });
+
+                rank++;
+            }
+
+            Debug.Log($"DatabaseManager: Leaderboard loaded — {leaderboard.Count} entries.");
+            OnLeaderboardLoaded?.Invoke(leaderboard);
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"DatabaseManager: Error fetching leaderboard — {e.Message}");
+            OnDatabaseError?.Invoke(e.Message);
+        }
+    }
+
+    #endregion
+}
+
+/// <summary>
+/// Data model untuk satu entry di leaderboard.
+/// </summary>
+[System.Serializable]
+public class LeaderboardEntry
+{
+    public int Rank;
+    public string DisplayName;
+    public int HighScore;
+    public int CurrentLevel;
 }
