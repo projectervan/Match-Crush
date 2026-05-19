@@ -179,7 +179,7 @@ public class AuthManager : MonoBehaviour
                 return;
             }
 
-            currentUser = task.Result.User;
+            currentUser = task.Result;
             Debug.Log($"Firebase sign-in success: {currentUser.DisplayName}");
             OnStatusMessage?.Invoke($"Login berhasil! Halo, {currentUser.DisplayName}");
             OnSignInSuccess?.Invoke(currentUser);
