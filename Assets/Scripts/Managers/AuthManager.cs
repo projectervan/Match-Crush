@@ -137,7 +137,7 @@ public class AuthManager : MonoBehaviour
             RequestIdToken = true
         };
 
-        GoogleSignIn.DefaultInstance.SignIn().ContinueWith(task =>
+        GoogleSignIn.DefaultInstance.SignIn().ContinueWith((System.Threading.Tasks.Task<GoogleSignInUser> task) =>
         {
             if (task.IsCanceled)
             {
@@ -155,7 +155,8 @@ public class AuthManager : MonoBehaviour
             }
 
             // Berhasil mendapat token dari Google, lanjut autentikasi ke Firebase
-            string idToken = task.Result.IdToken;
+            GoogleSignInUser signInUser = task.Result;
+            string idToken = signInUser.IdToken;
             FirebaseSignInWithGoogle(idToken);
 
         }, TaskScheduler.FromCurrentSynchronizationContext());
